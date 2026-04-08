@@ -179,11 +179,14 @@ local `lib64/` folder. The script is meant to keep the remote tree persistent
 so incremental rebuilds are faster.
 
 If you are building manually on Linux, the libretro core can also be built
-directly with:
+directly with the regular UNIX makefile and the libretro flags enabled:
 
 ```bash
 make -f Makefiles/Makefile.UNIX LIBRETRO=1 BITS=64
 ```
+
+That is the same build path used by the Linux `.so` release asset and by the
+remote Linux build script.
 
 ### Installing the built core in RetroArch
 
