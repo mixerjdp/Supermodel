@@ -110,6 +110,51 @@ This repository includes convenience scripts for the most common targets:
 - `build64.bat` for a Win64 libretro DLL
 - `buildlinux.bat` for a Linux libretro `.so`
 
+### What you need for RetroArch
+
+To use Supermodel as a RetroArch core, you need more than just the binary:
+
+- the libretro core itself:
+  - `supermodel_libretro.dll` on Windows
+  - `supermodel_libretro.so` on Linux
+- the matching RetroArch core info file:
+  - `supermodel_libretro.info`
+- Supermodel's game definition XML:
+  - `Games.xml`
+- Supermodel's optional custom music XML:
+  - `Music.xml`
+
+The XML files are important because Supermodel's libretro core still uses the
+same Model 3 game definitions and custom MPEG track mappings as the standalone
+emulator. `Games.xml` is required for game detection and proper ROM set
+loading; `Music.xml` is used for titles that support custom MPEG music tracks.
+
+Recommended RetroArch layout:
+
+- Core binary:
+  - Windows: `RetroArch/cores/supermodel_libretro.dll`
+  - Linux: `RetroArch/cores/supermodel_libretro.so`
+- Core info:
+  - `RetroArch/info/supermodel_libretro.info`
+- Game XML files:
+  - `RetroArch/system/Supermodel/Config/Games.xml`
+  - `RetroArch/system/Supermodel/Config/Music.xml`
+
+If you prefer a different RetroArch system directory, keep the same relative
+layout under that directory:
+
+```
+system/
+  Supermodel/
+    Config/
+      Games.xml
+      Music.xml
+    NVRAM/
+```
+
+The libretro core will look for `Games.xml` and `Music.xml` in the RetroArch
+system directory, under `Supermodel/Config/`.
+
 ### Windows
 
 The Windows scripts expect MSYS2 to be installed in `C:\msys64`.
@@ -140,6 +185,24 @@ directly with:
 make -f Makefiles/Makefile.UNIX LIBRETRO=1 BITS=64
 ```
 
+### Installing the built core in RetroArch
+
+If you build the core yourself, copy the output files into your RetroArch
+installation:
+
+1. Copy the core binary to `RetroArch/cores/`.
+2. Copy `supermodel_libretro.info` to `RetroArch/info/`.
+3. Copy `Games.xml` and `Music.xml` to
+   `RetroArch/system/Supermodel/Config/`.
+4. Optionally, create `RetroArch/system/Supermodel/NVRAM/` if you want a
+   dedicated NVRAM directory outside RetroArch's normal save path.
+
+When the core starts, RetroArch will use:
+
+- the `info` file to identify the core and its supported extension (`zip`)
+- `Games.xml` to detect the ROM set and its input profile
+- `Music.xml` only for games that use custom MPEG music tracks
+
 ### RetroArch assets
 
 For RetroArch, the core binary should be accompanied by the matching
@@ -150,6 +213,9 @@ include:
 - `supermodel_libretro-win64.dll`
 - `supermodel_libretro-linux.so`
 - `supermodel_libretro.info`
+
+The GitHub Releases page is the easiest way to grab a ready-to-use package if
+you do not want to build the core yourself.
 
 ### Note: running on macOS
 If you try and run a macOS binary that was downloaded from the internet and/or built on a different machine, you need to grant macOS permission to execute the binary (just 1-time):
