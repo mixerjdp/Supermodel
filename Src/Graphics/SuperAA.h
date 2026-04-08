@@ -13,7 +13,7 @@
 class SuperAA
 {
 public:
-	SuperAA(int aaValue, CRTcolor CRTcolors);
+	SuperAA(int aaValue, CRTcolor CRTcolors, bool forcePresent = false);
 	~SuperAA();
 
 	void Init(int width, int height);		// width & height are real window dimensions
@@ -27,6 +27,7 @@ private:
 	GLSLShader m_shader;
 	const int m_aa;
 	const CRTcolor m_crtcolors;
+	const bool m_forcePresent;
 	GLuint m_vao;
 	int m_width;
 	int m_height;

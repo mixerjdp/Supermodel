@@ -11,6 +11,7 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <SDL.h>
 #include "../Pkgs/libretro.h"
 #include "Version.h"
 #include <GL/glew.h>
@@ -628,6 +629,8 @@ static void LoadNVRAMFromDisk(void);
 static void SaveNVRAMToDisk(void);
 static InputProfileMode GetEffectiveInputProfile(void);
 static void ApplyFastForwardAwareness(bool fastforwarding);
+RETRO_API bool retro_unserialize(const void *data, size_t len);
+static bool RestoreStateAfterRendererRebuild(void);
 
 static bool IsGunGame(void)
 {
@@ -714,21 +717,88 @@ static bool IsWideScreenEnabled(void)
   return s_runtime_config["WideScreen"].ValueAsDefault<bool>(false);
 }
 
-static void UpdateOutputGeometry(void)
+static bool QueryCurrentFramebufferSize(unsigned &width, unsigned &height)
 {
-#ifdef __linux__
-  if (output_width > 0 && output_height > 0)
+  width = 0;
+  height = 0;
+
+  if (hw_render_cb.get_current_framebuffer == nullptr)
+    return false;
+
+  GLuint framebuffer = (GLuint)hw_render_cb.get_current_framebuffer();
+  GLint saved_framebuffer = 0;
+  glGetIntegerv(GL_FRAMEBUFFER_BINDING, &saved_framebuffer);
+  glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+
+  GLint attachment_type = 0;
+  glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+    GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE, &attachment_type);
+  if (attachment_type == GL_TEXTURE)
   {
-    x_res = output_width;
-    y_res = output_height;
-    total_x_res = output_width;
-    total_y_res = output_height;
-    x_offset = 0;
-    y_offset = 0;
-    return;
+    GLint texture_id = 0;
+    glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+      GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, &texture_id);
+    if (texture_id > 0)
+    {
+      GLint saved_texture = 0;
+      glGetIntegerv(GL_TEXTURE_BINDING_2D, &saved_texture);
+      glBindTexture(GL_TEXTURE_2D, (GLuint)texture_id);
+      GLint tex_width = 0;
+      GLint tex_height = 0;
+      glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &tex_width);
+      glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &tex_height);
+      glBindTexture(GL_TEXTURE_2D, (GLuint)saved_texture);
+      if (tex_width > 0 && tex_height > 0)
+      {
+        width = (unsigned)tex_width;
+        height = (unsigned)tex_height;
+      }
+    }
   }
+  else if (attachment_type == GL_RENDERBUFFER)
+  {
+    GLint renderbuffer_id = 0;
+    glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+      GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, &renderbuffer_id);
+    if (renderbuffer_id > 0)
+    {
+      GLint saved_renderbuffer = 0;
+      glGetIntegerv(GL_RENDERBUFFER_BINDING, &saved_renderbuffer);
+      glBindRenderbuffer(GL_RENDERBUFFER, (GLuint)renderbuffer_id);
+      GLint rb_width = 0;
+      GLint rb_height = 0;
+      glGetRenderbufferParameteriv(GL_RENDERBUFFER, GL_RENDERBUFFER_WIDTH, &rb_width);
+      glGetRenderbufferParameteriv(GL_RENDERBUFFER, GL_RENDERBUFFER_HEIGHT, &rb_height);
+      glBindRenderbuffer(GL_RENDERBUFFER, (GLuint)saved_renderbuffer);
+      if (rb_width > 0 && rb_height > 0)
+      {
+        width = (unsigned)rb_width;
+        height = (unsigned)rb_height;
+      }
+    }
+  }
+
+  glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)saved_framebuffer);
+  return width > 0 && height > 0;
+}
+
+#ifdef __linux__
+static bool QueryLinuxDesktopSize(unsigned &width, unsigned &height)
+{
+  SDL_DisplayMode mode = {};
+  if (SDL_GetDesktopDisplayMode(0, &mode) != 0)
+    return false;
+  if (mode.w <= 0 || mode.h <= 0)
+    return false;
+
+  width = (unsigned)mode.w;
+  height = (unsigned)mode.h;
+  return true;
+}
 #endif
 
+static void UpdateOutputGeometry(void)
+{
   x_res = SUPERMODEL_W;
   y_res = SUPERMODEL_H;
   if (IsWideScreenEnabled())
@@ -767,9 +837,41 @@ static void PushRetroGeometry(void)
 
 static bool RefreshOutputGeometry(void)
 {
-  UpdateOutputGeometry();
+  unsigned framebuffer_width = 0;
+  unsigned framebuffer_height = 0;
+  if (QueryCurrentFramebufferSize(framebuffer_width, framebuffer_height))
+  {
+    output_width = framebuffer_width;
+    output_height = framebuffer_height;
+  }
+  else if (output_width == 0 || output_height == 0)
+  {
+    GLint viewport[4] = { 0, 0, 0, 0 };
+    glGetIntegerv(GL_VIEWPORT, viewport);
+    if (viewport[2] > 0 && viewport[3] > 0)
+    {
+      output_width = (unsigned)viewport[2];
+      output_height = (unsigned)viewport[3];
+    }
+  }
 
 #ifdef __linux__
+  if (output_width > 0 && output_height > 0 &&
+      (output_width <= SUPERMODEL_W * 2u || output_height <= SUPERMODEL_H * 2u))
+  {
+    unsigned desktop_width = 0;
+    unsigned desktop_height = 0;
+    if (QueryLinuxDesktopSize(desktop_width, desktop_height) &&
+        desktop_width > output_width && desktop_height > output_height)
+    {
+      output_width = desktop_width;
+      output_height = desktop_height;
+    }
+  }
+#endif
+
+  UpdateOutputGeometry();
+
   if (output_width > 0 && output_height > 0)
   {
     total_x_res = output_width;
@@ -779,29 +881,30 @@ static bool RefreshOutputGeometry(void)
   }
   else
   {
+    total_x_res = x_res;
+    total_y_res = y_res;
+    x_offset = 0;
+    y_offset = 0;
+  }
+
+#ifndef __linux__
+  GLint viewport[4] = { 0, 0, 0, 0 };
+  glGetIntegerv(GL_VIEWPORT, viewport);
+  if (viewport[2] > 0 && viewport[3] > 0)
+  {
+    total_x_res = (unsigned)viewport[2];
+    total_y_res = (unsigned)viewport[3];
+    x_offset = (unsigned)viewport[0];
+    y_offset = (unsigned)viewport[1];
+  }
+  else
+  {
     total_x_res = SUPERMODEL_W;
     total_y_res = SUPERMODEL_H;
     x_offset = 0;
     y_offset = 0;
   }
-#else
-      GLint viewport[4] = { 0, 0, 0, 0 };
-      glGetIntegerv(GL_VIEWPORT, viewport);
-     if (viewport[2] > 0 && viewport[3] > 0)
-     {
-         total_x_res = (unsigned)viewport[2];
-         total_y_res = (unsigned)viewport[3];
-         x_offset = (unsigned)viewport[0];
-         y_offset = (unsigned)viewport[1];
-     }
-     else
-     {
-          total_x_res = SUPERMODEL_W;
-          total_y_res = SUPERMODEL_H;
-          x_offset = 0;
-          y_offset = 0;
-     }
-    #endif
+#endif
 
   if (superAA != nullptr)
     superAA->SetOutputSize((int)total_x_res, (int)total_y_res);
@@ -1385,12 +1488,34 @@ static bool InitGLState(void)
   }
 
   GLint viewport[4] = { 0, 0, 0, 0 };
-  glGetIntegerv(GL_VIEWPORT, viewport);
-  if (viewport[2] > 0 && viewport[3] > 0)
+  if (QueryCurrentFramebufferSize(output_width, output_height))
   {
-    output_width = (unsigned)viewport[2];
-    output_height = (unsigned)viewport[3];
+    /* framebuffer size already stored */
   }
+  else
+  {
+    glGetIntegerv(GL_VIEWPORT, viewport);
+    if (viewport[2] > 0 && viewport[3] > 0)
+    {
+      output_width = (unsigned)viewport[2];
+      output_height = (unsigned)viewport[3];
+    }
+  }
+
+#ifdef __linux__
+  if (output_width > 0 && output_height > 0 &&
+      (output_width <= SUPERMODEL_W * 2u || output_height <= SUPERMODEL_H * 2u))
+  {
+    unsigned desktop_width = 0;
+    unsigned desktop_height = 0;
+    if (QueryLinuxDesktopSize(desktop_width, desktop_height) &&
+        desktop_width > output_width && desktop_height > output_height)
+    {
+      output_width = desktop_width;
+      output_height = desktop_height;
+    }
+  }
+#endif
   UpdateOutputGeometry();
   PushRetroGeometry();
 
@@ -1506,7 +1631,11 @@ static bool InitializeRenderers(bool reset_model)
   PushRetroGeometry();
   ApplyGLGeometry();
 
-  superAA = new SuperAA(supersampling, crtcolors);
+  bool force_present = false;
+#ifdef __linux__
+  force_present = true;
+#endif
+  superAA = new SuperAA(supersampling, crtcolors, force_present);
   superAA->Init((int)total_x_res, (int)total_y_res);
   superAA->SetOutputSize((int)total_x_res, (int)total_y_res);
 
@@ -2528,12 +2657,15 @@ RETRO_API void retro_run(void) {
       refresh_input_mode = true;
     if ((supersampling_changed || video_options_changed) && renderers_ready)
     {
+      bool restore_state_after_rebuild = supersampling_changed || video_options_changed;
       DestroyRenderers();
       DestroyCrosshair();
       if (!InitializeRenderers(false))
         return;
       if (!InitializeCrosshair())
         ErrorLog("Crosshair initialization failed; falling back to software overlay.");
+      if (restore_state_after_rebuild)
+        RestoreStateAfterRendererRebuild();
     }
   }
   if (refresh_input_mode)
@@ -2687,6 +2819,25 @@ static bool BuildSerializedStateBuffer(void)
   serialized_state_buffer.assign(stateData, stateData + stateSize);
   serialized_state_ready = true;
   SaveState.Close();
+  return true;
+}
+
+static bool RestoreStateAfterRendererRebuild(void)
+{
+  if (Model3 == nullptr || !game_loaded)
+    return false;
+  if (!BuildSerializedStateBuffer())
+    return false;
+
+  std::vector<uint8_t> stateCopy = serialized_state_buffer;
+  if (stateCopy.empty())
+    return false;
+
+  if (!retro_unserialize(stateCopy.data(), stateCopy.size()))
+  {
+    ErrorLog("Unable to restore runtime state after renderer rebuild.");
+    return false;
+  }
   return true;
 }
 

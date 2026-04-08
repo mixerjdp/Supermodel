@@ -1,16 +1,17 @@
 #include "SuperAA.h"
 #include <string>
 
-SuperAA::SuperAA(int aaValue, CRTcolor CRTcolors) :
+SuperAA::SuperAA(int aaValue, CRTcolor CRTcolors, bool forcePresent) :
 	m_aa(aaValue),
 	m_crtcolors(CRTcolors),
+	m_forcePresent(forcePresent),
 	m_vao(0),
 	m_width(0),
 	m_height(0),
 	m_outputWidth(0),
 	m_outputHeight(0)
 {
-	if ((m_aa > 1) || (m_crtcolors != CRTcolor::None)) {
+	if (m_forcePresent || (m_aa > 1) || (m_crtcolors != CRTcolor::None)) {
 
 		static const char* vertexShader = R"glsl(
 
@@ -196,7 +197,7 @@ SuperAA::~SuperAA()
 
 void SuperAA::Init(int width, int height)
 {
-	if ((m_aa > 1) || (m_crtcolors != CRTcolor::None)) {
+	if (m_forcePresent || (m_aa > 1) || (m_crtcolors != CRTcolor::None)) {
 		m_fbo.Destroy();
 		m_fbo.Create(width * m_aa, height * m_aa);
 
@@ -215,7 +216,7 @@ void SuperAA::SetOutputSize(int width, int height)
 
 void SuperAA::Draw()
 {
-	if ((m_aa > 1) || (m_crtcolors != CRTcolor::None)) {
+	if (m_forcePresent || (m_aa > 1) || (m_crtcolors != CRTcolor::None)) {
 		glDisable(GL_DEPTH_TEST);
 		glDisable(GL_STENCIL_TEST);
 		glDisable(GL_SCISSOR_TEST);
