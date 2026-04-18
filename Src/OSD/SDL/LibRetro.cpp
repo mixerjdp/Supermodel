@@ -1654,6 +1654,9 @@ static bool InitializeRenderers(bool reset_model)
   bool force_present = false;
 #ifdef __linux__
   force_present = true;
+#else
+  if (UseLowOutputFix())
+    force_present = true;
 #endif
   superAA = new SuperAA(supersampling, crtcolors, force_present);
   superAA->Init((int)total_x_res, (int)total_y_res);
