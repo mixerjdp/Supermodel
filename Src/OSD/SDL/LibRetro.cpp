@@ -306,6 +306,9 @@ static int supersampling = 1;
 static CRTcolor crtcolors = CRTcolor::None;
 static unsigned output_width = SUPERMODEL_W;
 static unsigned output_height = SUPERMODEL_H;
+static unsigned visible_output_width = 0;
+static unsigned visible_output_height = 0;
+static bool visible_output_valid = false;
 static unsigned x_offset = 0;
 static unsigned y_offset = 0;
 static unsigned x_res = SUPERMODEL_W;
@@ -717,6 +720,11 @@ static bool IsWideScreenEnabled(void)
   return s_runtime_config["WideScreen"].ValueAsDefault<bool>(false);
 }
 
+static bool UseLowOutputFix(void)
+{
+  return visible_output_valid;
+}
+
 static bool QueryCurrentFramebufferSize(unsigned &width, unsigned &height)
 {
   width = 0;
@@ -782,20 +790,43 @@ static bool QueryCurrentFramebufferSize(unsigned &width, unsigned &height)
   return width > 0 && height > 0;
 }
 
-#ifdef __linux__
 static bool QueryLinuxDesktopSize(unsigned &width, unsigned &height)
 {
-  SDL_DisplayMode mode = {};
-  if (SDL_GetDesktopDisplayMode(0, &mode) != 0)
-    return false;
-  if (mode.w <= 0 || mode.h <= 0)
-    return false;
+#ifdef __linux__
+  width = 0;
+  height = 0;
 
-  width = (unsigned)mode.w;
-  height = (unsigned)mode.h;
-  return true;
-}
+  SDL_DisplayMode mode = {};
+  if (SDL_GetDesktopDisplayMode(0, &mode) == 0 && mode.w > 0 && mode.h > 0)
+  {
+    width = (unsigned)mode.w;
+    height = (unsigned)mode.h;
+    return true;
+  }
+#else
+  (void)width;
+  (void)height;
 #endif
+  return false;
+}
+
+static void CaptureVisibleOutputGeometry(void)
+{
+  GLint viewport[4] = { 0, 0, 0, 0 };
+  glGetIntegerv(GL_VIEWPORT, viewport);
+  if (viewport[2] > 0 && viewport[3] > 0 && viewport[3] < 480)
+  {
+    visible_output_width = (unsigned)viewport[2];
+    visible_output_height = (unsigned)viewport[3];
+    visible_output_valid = true;
+  }
+  else
+  {
+    visible_output_width = 0;
+    visible_output_height = 0;
+    visible_output_valid = false;
+  }
+}
 
 static void UpdateOutputGeometry(void)
 {
@@ -824,91 +855,108 @@ static void PushRetroGeometry(void)
   if (cb_env == nullptr)
     return;
 
+  const bool low_output_fix = UseLowOutputFix();
+  const unsigned geom_width = low_output_fix ? visible_output_width : (IsWideScreenEnabled() ? total_x_res : SUPERMODEL_W);
+  const unsigned geom_height = low_output_fix ? visible_output_height : (IsWideScreenEnabled() ? total_y_res : SUPERMODEL_H);
   retro_game_geometry geom = {};
-  geom.base_width = IsWideScreenEnabled() ? total_x_res : SUPERMODEL_W;
-  geom.base_height = IsWideScreenEnabled() ? total_y_res : SUPERMODEL_H;
-  geom.max_width = std::max(total_x_res, SUPERMODEL_W * 8u);
-  geom.max_height = std::max(total_y_res, SUPERMODEL_H * 8u);
+  geom.base_width = geom_width;
+  geom.base_height = geom_height;
+  geom.max_width = std::max(geom_width, SUPERMODEL_W * 8u);
+  geom.max_height = std::max(geom_height, SUPERMODEL_H * 8u);
   geom.aspect_ratio = IsWideScreenEnabled() ? (16.0f / 9.0f) : ((float)SUPERMODEL_W / (float)SUPERMODEL_H);
   cb_env(RETRO_ENVIRONMENT_SET_GEOMETRY, &geom);
-  reported_width = total_x_res;
-  reported_height = total_y_res;
+  reported_width = geom_width;
+  reported_height = geom_height;
 }
 
 static bool RefreshOutputGeometry(void)
 {
-  unsigned framebuffer_width = 0;
-  unsigned framebuffer_height = 0;
-  if (QueryCurrentFramebufferSize(framebuffer_width, framebuffer_height))
+  UpdateOutputGeometry();
+
+  if (UseLowOutputFix())
   {
-    output_width = framebuffer_width;
-    output_height = framebuffer_height;
+    total_x_res = visible_output_width;
+    total_y_res = visible_output_height;
+    x_offset = 0;
+    y_offset = 0;
   }
-  else if (output_width == 0 || output_height == 0)
+  else
   {
+    unsigned framebuffer_width = 0;
+    unsigned framebuffer_height = 0;
+
+    if (QueryCurrentFramebufferSize(framebuffer_width, framebuffer_height))
+    {
+      output_width = framebuffer_width;
+      output_height = framebuffer_height;
+    }
+    else
+    {
+      GLint viewport[4] = { 0, 0, 0, 0 };
+      glGetIntegerv(GL_VIEWPORT, viewport);
+      if (viewport[2] > 0 && viewport[3] > 0)
+      {
+        output_width = (unsigned)viewport[2];
+        output_height = (unsigned)viewport[3];
+        x_offset = (unsigned)viewport[0];
+        y_offset = (unsigned)viewport[1];
+      }
+    }
+
+#ifdef __linux__
+    if (output_width > 0 && output_height > 0 &&
+        (output_width <= SUPERMODEL_W * 2u || output_height <= SUPERMODEL_H * 2u))
+    {
+      unsigned desktop_width = 0;
+      unsigned desktop_height = 0;
+      if (QueryLinuxDesktopSize(desktop_width, desktop_height) &&
+          desktop_width > output_width && desktop_height > output_height)
+      {
+        output_width = desktop_width;
+        output_height = desktop_height;
+      }
+    }
+#endif
+
+    if (output_width > 0 && output_height > 0)
+    {
+      total_x_res = output_width;
+      total_y_res = output_height;
+      x_offset = 0;
+      y_offset = 0;
+    }
+    else
+    {
+      total_x_res = x_res;
+      total_y_res = y_res;
+      x_offset = 0;
+      y_offset = 0;
+    }
+
+#ifndef __linux__
     GLint viewport[4] = { 0, 0, 0, 0 };
     glGetIntegerv(GL_VIEWPORT, viewport);
     if (viewport[2] > 0 && viewport[3] > 0)
     {
-      output_width = (unsigned)viewport[2];
-      output_height = (unsigned)viewport[3];
+      total_x_res = (unsigned)viewport[2];
+      total_y_res = (unsigned)viewport[3];
+      x_offset = (unsigned)viewport[0];
+      y_offset = (unsigned)viewport[1];
     }
-  }
-
-#ifdef __linux__
-  if (output_width > 0 && output_height > 0 &&
-      (output_width <= SUPERMODEL_W * 2u || output_height <= SUPERMODEL_H * 2u))
-  {
-    unsigned desktop_width = 0;
-    unsigned desktop_height = 0;
-    if (QueryLinuxDesktopSize(desktop_width, desktop_height) &&
-        desktop_width > output_width && desktop_height > output_height)
+    else
     {
-      output_width = desktop_width;
-      output_height = desktop_height;
+      total_x_res = SUPERMODEL_W;
+      total_y_res = SUPERMODEL_H;
+      x_offset = 0;
+      y_offset = 0;
     }
-  }
 #endif
-
-  UpdateOutputGeometry();
-
-  if (output_width > 0 && output_height > 0)
-  {
-    total_x_res = output_width;
-    total_y_res = output_height;
-    x_offset = 0;
-    y_offset = 0;
   }
-  else
-  {
-    total_x_res = x_res;
-    total_y_res = y_res;
-    x_offset = 0;
-    y_offset = 0;
-  }
-
-#ifndef __linux__
-  GLint viewport[4] = { 0, 0, 0, 0 };
-  glGetIntegerv(GL_VIEWPORT, viewport);
-  if (viewport[2] > 0 && viewport[3] > 0)
-  {
-    total_x_res = (unsigned)viewport[2];
-    total_y_res = (unsigned)viewport[3];
-    x_offset = (unsigned)viewport[0];
-    y_offset = (unsigned)viewport[1];
-  }
-  else
-  {
-    total_x_res = SUPERMODEL_W;
-    total_y_res = SUPERMODEL_H;
-    x_offset = 0;
-    y_offset = 0;
-  }
-#endif
 
   if (superAA != nullptr)
     superAA->SetOutputSize((int)total_x_res, (int)total_y_res);
-  if (reported_width != total_x_res || reported_height != total_y_res)
+  if (reported_width != (UseLowOutputFix() ? visible_output_width : total_x_res) ||
+      reported_height != (UseLowOutputFix() ? visible_output_height : total_y_res))
     PushRetroGeometry();
   return false;
 }
@@ -1487,35 +1535,7 @@ static bool InitGLState(void)
     return false;
   }
 
-  GLint viewport[4] = { 0, 0, 0, 0 };
-  if (QueryCurrentFramebufferSize(output_width, output_height))
-  {
-    /* framebuffer size already stored */
-  }
-  else
-  {
-    glGetIntegerv(GL_VIEWPORT, viewport);
-    if (viewport[2] > 0 && viewport[3] > 0)
-    {
-      output_width = (unsigned)viewport[2];
-      output_height = (unsigned)viewport[3];
-    }
-  }
-
-#ifdef __linux__
-  if (output_width > 0 && output_height > 0 &&
-      (output_width <= SUPERMODEL_W * 2u || output_height <= SUPERMODEL_H * 2u))
-  {
-    unsigned desktop_width = 0;
-    unsigned desktop_height = 0;
-    if (QueryLinuxDesktopSize(desktop_width, desktop_height) &&
-        desktop_width > output_width && desktop_height > output_height)
-    {
-      output_width = desktop_width;
-      output_height = desktop_height;
-    }
-  }
-#endif
+  CaptureVisibleOutputGeometry();
   UpdateOutputGeometry();
   PushRetroGeometry();
 
@@ -2466,10 +2486,13 @@ RETRO_API void retro_deinit(void) {
 // Before load_game
 RETRO_API void retro_get_system_av_info(struct retro_system_av_info *info) {
   UpdateOutputGeometry();
-  info->geometry.base_width = IsWideScreenEnabled() ? total_x_res : SUPERMODEL_W;
-  info->geometry.base_height = IsWideScreenEnabled() ? total_y_res : SUPERMODEL_H;
-  info->geometry.max_width = std::max(total_x_res, SUPERMODEL_W * 8u);
-  info->geometry.max_height = std::max(total_y_res, SUPERMODEL_H * 8u);
+  const bool low_output_fix = UseLowOutputFix();
+  const unsigned geom_width = low_output_fix ? visible_output_width : (IsWideScreenEnabled() ? total_x_res : SUPERMODEL_W);
+  const unsigned geom_height = low_output_fix ? visible_output_height : (IsWideScreenEnabled() ? total_y_res : SUPERMODEL_H);
+  info->geometry.base_width = geom_width;
+  info->geometry.base_height = geom_height;
+  info->geometry.max_width = std::max(geom_width, SUPERMODEL_W * 8u);
+  info->geometry.max_height = std::max(geom_height, SUPERMODEL_H * 8u);
   info->geometry.aspect_ratio = IsWideScreenEnabled() ? (16.0f / 9.0f) : ((float)SUPERMODEL_W / (float)SUPERMODEL_H);
   info->timing.fps = 60.0f;
   info->timing.sample_rate = 44100.0f;
@@ -2713,7 +2736,10 @@ RETRO_API void retro_run(void) {
     if (!frontend_fastforwarding && ShouldDrawPointerOverlay())
       DrawPointerOverlay();
     glFlush();
-    cb_video_refresh(RETRO_HW_FRAME_BUFFER_VALID, total_x_res, total_y_res, 0);
+    cb_video_refresh(RETRO_HW_FRAME_BUFFER_VALID,
+      UseLowOutputFix() ? visible_output_width : total_x_res,
+      UseLowOutputFix() ? visible_output_height : total_y_res,
+      0);
   }
 }
 
